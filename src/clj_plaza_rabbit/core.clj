@@ -6,14 +6,7 @@
   (:use [clojure.contrib.logging :only [log]])
   (:import [java.util.concurrent LinkedBlockingQueue]
            [com.rabbitmq.client
-            ConnectionParameters
-            Connection
-            Channel
-            Envelope
-            AMQP
-            ConnectionFactory
-            Consumer
-            QueueingConsumer]))
+            Connection BasicProperties Channel Envelope AMQP ConnectionFactory Consumer QueueingConsumer]))
 
 (defonce *default-rabbit-parameters* {:username "guest" :password "guest" :host "localhost" :port 5672 :virtual-host "/"})
 
@@ -36,13 +29,14 @@
    Args: :username :password :host :port :virtual-host"
   ([& args]
      (let [{:keys [username password virtual-host port host]} (check-default-values (apply array-map args))
-           #^ConnectionParameters params (doto (new ConnectionParameters)
-                                           (.setUsername username)
-                                           (.setPassword password)
-                                           (.setVirtualHost virtual-host)
-                                           (.setRequestedHeartbeat 0))
-           #^ConnectionFactory f (new ConnectionFactory params)
-           #^Connection conn (.newConnection f host (int port))]
+           #^ConnectionFactory f (doto (ConnectionFactory.)
+                                   (.setHost host)
+                                   (.setPort port)
+                                   (.setUsername username)
+                                   (.setPassword password)
+                                   (.setVirtualHost virtual-host)
+                                   (.setRequestedHeartbeat 0))
+           #^Connection conn (.newConnection f)]
        (with-meta {:connection conn :channels (ref {}) :queues (ref {})} {:rabbit true}))))
 
 (defn make-channel
@@ -102,7 +96,7 @@
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [exclusive durable autodelete]} (check-default-values (apply array-map args) *default-rabbit-queue-parameters*)]
        (log :info (str "*** Declaring queue " queue-name " through channel " channel " and exchange " exchange-name " with properties exclusive:" exclusive " durable:" durable " autodelete:" autodelete ))
-       (.queueDeclare chn queue-name false durable exclusive autodelete {})
+       (.queueDeclare chn queue-name durable exclusive autodelete {})
        (.queueBind chn queue-name exchange-name routing-key)
        (dosync (alter (:queues rabbit) (fn [old] (assoc old queue-name {:exchange exchange-name :routing-key routing-key :channel chn})))
                (deref (:queues rabbit))))))
@@ -123,7 +117,7 @@
        (remove-channel rabbit channel)
        ;; Consumer registration
        (let [consumer (proxy [com.rabbitmq.client.DefaultConsumer] [chn]
-                        (handleDelivery [#^String consumerTag #^Envelope envelope #^AMQP.BasicProperties properties body]
+                        (handleDelivery [#^String consumerTag #^Envelope envelope #^BasicProperties properties body]
                                         (let [msg (String. body)
                                               delivery-tag (.getDeliveryTag envelope)]
                                           (log :info (str "*** recived message with tag " delivery-tag " from queue " queue " and channel " channel))
@@ -144,7 +138,7 @@
        ;; Consumer registration
        (let [q (LinkedBlockingQueue.)
              consumer (proxy [com.rabbitmq.client.DefaultConsumer] [chn]
-                        (handleDelivery [#^String consumerTag #^Envelope envelope #^AMQP.BasicProperties properties body]
+                        (handleDelivery [#^String consumerTag #^Envelope envelope #^BasicProperties properties body]
                                         (let [msg (String. body)
                                               delivery-tag (.getDeliveryTag envelope)]
                                           (log :info (str "*** recived message with tag " delivery-tag " from queue " queue " and channel " channel))
@@ -168,7 +162,7 @@
              acum (ref [])
              prom (promise)
              consumer (proxy [com.rabbitmq.client.DefaultConsumer] [chn]
-                        (handleDelivery [#^String consumer-tag #^Envelope envelope #^AMQP.BasicProperties properties body]
+                        (handleDelivery [#^String consumer-tag #^Envelope envelope #^BasicProperties properties body]
                                         (let [msg (String. body)
                                               delivery-tag (.getDeliveryTag envelope)]
                                           (log :info (str "*** received message with tag " delivery-tag " from queue " queue " and channel " channel))
@@ -198,5 +192,5 @@
      (.basicPublish (get (deref (:channels rabbit)) channel)
                     exchange
                     routing-key
-                    nil
+                    com.rabbitmq.client.MessageProperties/TEXT_PLAIN
                     (.getBytes message))))
