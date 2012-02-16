@@ -45,6 +45,14 @@
      (let [chn (.createChannel (:connection rabbit))]
        (dosync (alter (:channels rabbit) (fn [old] (assoc old name chn)))))))
 
+(defn get-channel
+  "Returns a named channel, or creates one if it doesn't already exist"
+  [rabbit name]
+  (if-let [chan (get (deref (:channels rabbit)) name)]
+    chan
+    (get (make-channel rabbit name) name))
+  )
+
 (defn remove-channel
   "Removes a channel from the list of channels"
   ([rabbit name]
@@ -85,12 +93,10 @@
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [type durable autodelete]} (assoc (check-default-values (apply array-map args) *default-rabbit-exchange-parameters*) :type "topic")]
        (log :info (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
-       (.exchangeDeclare chn name type false durable autodelete {}))))
-
-;; Queues
+       (.exchangeDeclare chn name type durable autodelete {}))))
 
 (defn make-queue
-  "Declares and binds a new queue
+  "Declares and optionally binds a new queue
    Args: :exclusive :durable :autodelete"
   ([rabbit channel queue-name exchange-name routing-key & args]
      (let [chn (get (deref (:channels rabbit)) channel)
@@ -121,7 +127,7 @@
                                         (let [msg (String. body)
                                               delivery-tag (.getDeliveryTag envelope)]
                                           (log :info (str "*** recived message with tag " delivery-tag " from queue " queue " and channel " channel))
-                                          (f msg))))]
+                                          (f msg properties envelope))))]
          (log :info (str "*** about to block in queue " queue " with channel: " chn " and consumer: " consumer))
          (.basicConsume chn queue true consumer)))))
 
@@ -130,7 +136,7 @@
   ([queue tail] (lazy-seq (cons (.take queue) (lazy-queue queue tail)))))
 
 (defn make-consumer-queue
-  "Creates a new consumer handling messages delivered to a queue. The provided functionw will be invoked each time a new message is available"
+  "Creates a new consumer handling messages delivered to a queue. The provided function will be invoked each time a new message is available"
   ([rabbit channel queue]
      (let [chn (get (deref (:channels rabbit)) channel)]
        ;; The channel is no longer available
@@ -188,9 +194,14 @@
 (defn publish
   "Publish a message through a channel"
   ([rabbit channel exchange routing-key message]
+     (publish rabbit channel exchange routing-key com.rabbitmq.client.MessageProperties/TEXT_PLAIN message))
+  
+  ([rabbit channel exchange routing-key properties message]
      (log :info (str "*** publishing a message through channel " channel " to exchange " exchange " with routing key " routing-key))
      (.basicPublish (get (deref (:channels rabbit)) channel)
                     exchange
                     routing-key
-                    com.rabbitmq.client.MessageProperties/TEXT_PLAIN
-                    (.getBytes message))))
+                    properties
+                    (.getBytes message))
+     ))
+
